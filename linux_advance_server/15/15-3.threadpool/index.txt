@@ -1,0 +1,113 @@
+gdb调试多线程的例子
+为了方便gdb测试只启动了1个线程
+
+[root@web11 15-3.threadpool]# gdb ./main
+(gdb) b main.cpp:103
+Breakpoint 1 at 0x401d42: file main.cpp, line 103.
+(gdb) b threadpool.h:100
+Breakpoint 2 at 0x40277d: file threadpool.h, line 100.
+(gdb) r 127.0.0.1 1234
+Starting program: /root/www/c_book_resource/linux_advance_server/15/15-3.threadpool/main 127.0.0.1 1234
+[Thread debugging using libthread_db enabled]
+create the 0th thread
+[New Thread 0x7ffff7fc5700 (LWP 31319)]
+[Switching to Thread 0x7ffff7fc5700 (LWP 31319)]
+Breakpoint 2, threadpool<http_conn>::run (this=0x606010) at threadpool.h:100
+100			m_queuestat.wait();//GDB子线程断点位置
+(gdb) info thread
+* 2 Thread 0x7ffff7fc5700 (LWP 31319)  threadpool<http_conn>::run (this=0x606010) at threadpool.h:100
+  1 Thread 0x7ffff7fc7720 (LWP 31314)  0x0000003c7b2e95d7 in bind () from /lib64/libc.so.6
+(gdb) thread 1
+[Switching to thread 1 (Thread 0x7ffff7fc7720 (LWP 31314))]#0  0x0000003c7b2e95d7 in bind () from /lib64/libc.so.6
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+Single stepping until exit from function bind,
+which has no line number information.
+main (argc=3, argv=0x7fffffffe308) at main.cpp:90
+90		assert( ret >= 0 );
+(gdb) thread apply 1 n
+92		ret = listen( listenfd, 5 );
+(gdb) thread apply 1 n
+[Switching to Thread 0x7ffff7fc7720 (LWP 31314)]
+Breakpoint 1, main (argc=3, argv=0x7fffffffe308) at main.cpp:103
+103			int number = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );//主线程GDB断点
+(此时客户端必须去执行telnet 127.0.0.1 1234 才能继续调试服务器)
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+104			if ( ( number < 0 ) && ( errno != EINTR ) )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+110			for ( int i = 0; i < number; i++ )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+112				int sockfd = events[i].data.fd;
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+113				if( sockfd == listenfd )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+116					socklen_t client_addrlength = sizeof( client_address );
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+117					int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlengt
+h );(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+118					if ( connfd < 0 )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+123					if( http_conn::m_user_count >= MAX_FD )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+129					users[connfd].init( connfd, client_address );
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+110			for ( int i = 0; i < number; i++ )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+101		while( true )
+(执行这不之前telnet必须发送些东西,否则这里下面epoll_wait就会阻塞)
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+Breakpoint 1, main (argc=3, argv=0x7fffffffe308) at main.cpp:103
+103			int number = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );//主线程GDB断点
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+104			if ( ( number < 0 ) && ( errno != EINTR ) )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+110			for ( int i = 0; i < number; i++ )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+112				int sockfd = events[i].data.fd;
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+113				if( sockfd == listenfd )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+131				else if( events[i].events & ( EPOLLRDHUP | EPOLLHUP | EPOLLERR ) )
+(gdb) thread apply 2 n  (这里我按错了 因为现在服务还没把任务放入队列 子线程根本不能取执行)
+Thread 2 (Thread 0x7ffff7fc5700 (LWP 31319)):
+Single stepping until exit from function sem_wait,
+which has no line number information.
+这里被卡死了
+解决方法ctrl+c终端子线程的这个阻塞，切换回主线程继续处理客户请求并且把请求放入队列,子线程才能解除sem_wait的阻塞
+^C  
+Program received signal SIGINT, Interrupt.
+0x0000003c7b60d930 in sem_wait () from /lib64/libpthread.so.0
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+135				else if( events[i].events & EPOLLIN )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+137					if( users[sockfd].read() )
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+139						pool->append( users + sockfd );//主线程把用户请求而放入队列
+(gdb) thread apply 1 n
+Thread 1 (Thread 0x7ffff7fc7720 (LWP 31314)):
+m_check_state:0
+line_status:0
+got 1 http line: abc (子线程从队列获取请求并且开始处理)
+[Switching to Thread 0x7ffff7fc5700 (LWP 31319)]
+Breakpoint 2, threadpool<http_conn>::run (this=0x606010) at threadpool.h:100
+100			m_queuestat.wait();//GDB子线程断点位置

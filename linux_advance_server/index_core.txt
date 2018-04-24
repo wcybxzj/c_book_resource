@@ -1,0 +1,48 @@
+Linux高性能服务器编程(内核参数):
+2.5 IP转发:
+使主机能够进行数据转发:
+/proc/sys/net/ipv4/ip_forward
+------------------------------------------
+2.6.1 ICMP重定向报文:
+是否允许发送ICMP重定向报文:
+/proc/sys/net/ipv4/conf/all/send_redirects
+是否允许接受ICMP重定向报文:
+/proc/sys/net/ipv4/conf/all/accept_redirects
+------------------------------------------
+3.2.2 TCP头部选项:
+启用窗口扩大因子:
+/proc/sys/net/ipv4/tcp_window_scaling
+开启选择性确认:
+/proc/sys/net/ipv4/tcp_sack
+时间戳选项:
+/proc/sys/net/ipv4/tcp_timestamps
+------------------------------------------
+3.3.3 连接超时:
+SYN同步连接失败重连失败:
+/proc/sys/net/ipv4/tcp_syn_retries
+------------------------------------------
+3.4.1 TCP状态转移总图:
+防止孤儿连接留在内核中:
+/proc/sys/net/ipv4/tcp_max_orphans
+/proc/sys/net/ipv4/tcp_fin_timeout
+------------------------------------------
+3.9 超时重传:
+ip接管前TCP超时重传的次数:
+/proc/sys/net/ipv4/tcp_retries1
+连接放弃前TCP最多可以执行的重传次数:
+/proc/sys/net/ipv4/tcp_retries2
+------------------------------------------
+3.10 拥塞控制:
+指定拥塞控制算法:
+/proc/sys/net/ipv4/tcp_congestion_control
+------------------------------------------
+5.11.1 SO_REUSEADDR选项:
+另外一种强制使用被处于TIME_WAIT状态socket方法:
+/proc/sys/net/ipv4/tcp_tw_recycle
+------------------------------------------
+5.11.2 SO_RCVBUF和SO_SNDBUF
+socket 读写缓冲区:
+/proc/sys/net/ipv4/tcp_rmem
+/proc/sys/net/ipv4/tcp_wmem
+------------------------------------------
+

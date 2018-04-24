@@ -1,0 +1,49 @@
+//正常使用
+./shm_talk_server 127.0.0.1 1234
+nc 127.0.0.1 1234
+nc 127.0.0.1 1234
+nc 127.0.0.1 1234
+==================================================================
+SIGPIPE更多信息看 unp1 6.unp1/tcpcliserv/client.c
+父进程出现SIGPIPE没出现过
+子进程出现SIGPIPE的可以测出来
+
+代码修改:
+修改1
+子进程addsig( SIGPIPE, SIG_IGN);//改变SIGPIPE的默认行为，
+原来SIGPIPE子进程会直接退出就无法看到退出的错误原因
+修改2:
+子进程发现客户连接终端的时候不做处理注释掉stop_child = true
+
+启动3个客户端
+关闭第一个客户端(因为代码修改第一个客户端对应的子进程没有关闭),
+第二个客户端发送数据,此时按照聊天室的流程就会对第一个客户端和第三个客户端进行send数据
+可是此时第一个客户端socket已经关闭，对一个已经关闭的socket进行write将会触发SIGPIPE
+
+实验SIGPIPE:
+./shm_talk_server 127.0.0.1 1234
+read data from child accross pipe
+send data to child accross pipe
+send data to child accross pipe
+当前子进程:2, send
+当前子进程:2,ret:1024 errno:0
+当前子进程:1, send
+当前子进程:1,ret:1024 errno:0
+当前子进程:0, 客户端连接关闭
+read data from child accross pipe
+send data to child accross pipe
+send data to child accross pipe
+当前子进程:2, send
+当前子进程:0, send
+当前子进程:0,ret:1024 errno:0
+当前子进程:0, 客户端连接关闭
+当前子进程:2,ret:1024 errno:0
+read data from child accross pipe
+send data to child accross pipe
+send data to child accross pipe
+当前子进程:0, send
+当前子进程:2, send
+当前子进程:0,ret:-1 errno:32(SIGPPIE 是32号)
+当前子进程:2,ret:1024 errno:0
+child send(connfd) rerror:: Broken pipe
+

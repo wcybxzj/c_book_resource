@@ -1,0 +1,78 @@
+Linux高性能服务器编程(第二篇深入解析高性能服务器编程:第11章定时器)
+Linux提供三种定时方法:
+1.socket选项SO_RCVTIMEO和SO_SNDTIMEO
+2.SIGALARM
+3.I/O复用复用超时设置
+//////////////////////////////////////////////////////////////////////////////
+11.1 socket选项SO_RCVTIMEO和SO_SNDTIMEO
+定时器容器是容器类数据结构,比如事件轮.
+定时器是容器内中的对象,它是对定时事件的封装.
+//////////////////////////////////////////////////////////////////////////////
+11-1connect_timeout.cpp:
+[php]
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <stdio.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+#include <libgen.h>
+int timeout_connect( const char* ip, int port, int time )
+{
+	int ret = 0;
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &address.sin_addr );
+	address.sin_port = htons( port );
+	int sockfd = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( sockfd >= 0 );
+	struct timeval timeout;
+	timeout.tv_sec = time;
+	timeout.tv_usec = 0;
+	socklen_t len = sizeof( timeout );
+	ret = setsockopt( sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, len );
+	assert( ret != -1 );
+	ret = connect( sockfd, ( struct sockaddr* )&address, sizeof( address ) );
+	if ( ret == -1 )
+	{
+		if( errno == EINPROGRESS )
+		{
+			printf( "connecting timeout\n" );
+			return -1;
+		}
+		printf("errno number is %d\n", errno);
+		printf( "error occur when connecting to server\n" );
+		return -1;
+	}
+	return sockfd;
+}
+int main( int argc, char* argv[] )
+{
+	if( argc <= 2 )
+	{
+		printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	int sockfd = timeout_connect( ip, port, 10 );
+	if ( sockfd < 0 )
+	{
+		return 1;
+	}
+	return 0;
+}
+[/php]
+//////////////////////////////////////////////////////////////////////////////
+11.2 SIGALARM 信号
+11.2.1 基于升序链表的定时器:TODO
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+

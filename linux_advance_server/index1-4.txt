@@ -1,0 +1,366 @@
+Linux高性能服务器编程(第一篇tcp/ip协议详解:1-4章):
+准备:
+
+1.DNS服务器地址:
+/etc/resolv.conf
+所有协议的端口:
+/etc/protocols
+所有服务的端口:
+/etc/services
+
+2.Ubuntu,开启echo和telnetd 和daytime 服务:
+sudo apt-get install xinetd
+sudo m /etc/xientd.d/echo 开启服务
+sudo apt-get install xinetd telnetd
+sudo m /etc/xientd.d/telnet 开启服务
+sudo service xinetd restart
+[php]
+service telnet
+{
+	disable = no
+	flags = REUSE
+	socket_type = stream
+	wait = no
+	user = root
+	server = /usr/sbin/in.telnetd
+	log_on_failure += USERID
+}
+[/php]
+sudo service xinetd restart
+
+3.Mac开启telnet服务:
+To enable the telnet daemon, launch Terminal.app and issue:
+sudo launchctl load -w /System/Library/LaunchDaemons/telnet.plist
+To disable the daemon:
+sudo launchctl unload -w /System/Library/LaunchDaemons/telnet.plist
+
+4.[解决]Ubuntu:Destination Host Unreachable
+sudo service network-manager restart
+
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+第一章:TCP/IP协议簇
+Mac:192.168.109
+Ubuntu:192.168.1.108
+
+/////////////////////////////////////////////////////////
+1.5.2 高速缓存的查看和修改
+Mac-terminal-one:
+[php]
+arp -a 查看所有
+sudo arp -s 192.168.1.108 f0:de:f1:f8:db:52 手动添加
+sudo arp -d 192.168.1.108 删除
+mac上wifi是en0,ipconfig查看
+sudo tcpdump -i en0 -ent '(dst 192.168.1.108 and src 192.168.1.109)or(dst 192.168.1.109 and src 192.168.1.108)'   -e打开显示以太网帧头部显示
+显示ARP(request/replay):
+7c:d1:c3:f8:40:b3 > ff:ff:ff:ff:ff:ff, ethertype ARP (0x0806), length 42: Request who-has 192.168.1.108 tell 192.168.1.109, length 28
+74:e5:0b:f4:22:74 > 7c:d1:c3:f8:40:b3, ethertype ARP (0x0806), length 42: Reply 192.168.1.108 is-at 74:e5:0b:f4:22:74, length 28
+[/php]
+Mac-terminal-two:
+[php]
+echo 服务的端口默认是7
+telnet 192.168.1.108 7
+[/php]
+/////////////////////////////////////////////////////////
+1.6 DNS工作原理:
+hsot 实用DNS协议和DNS服务器通信, -t A:查询类型是获取ip
+[php]
+host -t A www.baidu.com
+www.baidu.com is an alias for www.a.shifen.com.
+www.a.shifen.com has address 119.75.218.77
+www.a.shifen.com has address 119.75.217.56
+别名www.a.shifen.com,此机器对应两个ip
+[/php]
+/////////////////////////////////////////////////////////
+1.6.3 实用tcpdump观察DNS通信过程
+terminal-one:
+[php]
+sudo tcpdump -i e0 -x -nt -s 500 port domain
+IP 192.168.1.109.55872 > 8.8.8.8.53: 31833+ A? www.baidu.com. (31)
+IP 8.8.8.8.53 > 192.168.1.109.55872: 31833 3/0/0 CNAME www.a.shifen.com., A 119.75.218.77, A 119.75.217.56 (90)
+[/php]
+
+terminal-two:
+[php]
+host -t A www.baidu.com
+[/php]
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+///////////////////////////////////////////////////////////////////////////////
+第2章:IP协议详解
+2.2.2 使用tcpdump观察IPv4头部结构:
+termial-one:
+[php]
+sudo tcpdump -ntx -i lo0 port 23
+[/php]
+termial-two:
+[php]
+telnent 127.0.0.1 80
+[/php]
+/////////////////////////////////////////////////////////
+2.3 IP分片:
+Mac-terminal-one:
+[php]
+ping -s 1473 192.168.1.108 (192.168.1.108是ubuntu)
+[/php]
+
+Mac-terminal-two:
+[php]
+sudo tcpdump -ntv -i en0 icmp
+IP (tos 0x0, ttl 64, id 52547, offset 0, flags [+], proto ICMP (1), length 1500)
+    192.168.1.109 > 192.168.1.108: ICMP echo request, id 33978, seq 3, length 1480
+IP (tos 0x0, ttl 64, id 52547, offset 1480, flags [none], proto ICMP (1), length 21)
+    192.168.1.109 > 192.168.1.108: ip-proto-1
+IP (tos 0x0, ttl 64, id 54455, offset 0, flags [+], proto ICMP (1), length 1500)
+    192.168.1.108 > 192.168.1.109: ICMP echo reply, id 33978, seq 3, length 1480
+IP (tos 0x0, ttl 64, id 54455, offset 1480, flags [none], proto ICMP (1), length 21)
+    192.168.1.108 > 192.168.1.109: ip-proto-1
+图2-2:
+en0 的mtu是1500,也就是1500一片
+第一片ip头部20+icmp头8+icmp内容1472=1500
+第二片ip20+数据1=21
+[/php]
+/////////////////////////////////////////////////////////
+2.4.2 路由机制:
+netstat -nr (r 路由,n 显示ip) / route -nr (mac只能用netstat)
+路由表更新:
+Mac(我是用mac走的ubuntu的网关实现的主机重定向,ubuntu只需要/etc/syscetl.conf中net.ipv4.ip_forward=1):
+[php]
+sudo route -n delete default
+sudo route -n add default 192.168.1.108
+ping www.baidu.com
+PING www.a.shifen.com (119.75.218.77): 56 data bytes
+92 bytes from 192.168.1.108: Redirect Host(New addr: 192.168.1.1)
+Vr HL TOS  Len   ID Flg  off TTL Pro  cks      Src      Dst
+[/php]
+Ubuntu(ubuntu走mac主机重定向):
+[php]
+sudo route add -host 192.168.1.109 dev eth0
+sudo route del -net 192.168.1.0 netmask 255.255.255.0
+sudo route del default
+#ubuntu的gateway设置为mac
+sudo route add default gw 192.168.1.109 dev eth0
+[/php]
+/////////////////////////////////////////////////////////
+2.5 IP转发
+Mac:
+[php]
+sudo sysctl -w net.inet.ip.forwarding=1
+[/php]
+Ubuntu:
+[/php]
+/etc/sysctl.conf, 例如，将
+net.ipv4.ip_forward = 0
+变为
+net.ipv4.ip_forward = 1
+重启后生效，用sysctl -a查看可知
+[/php]
+
+/////////////////////////////////////////////////////////
+2.6重定向(实验)
+1.目的:
+web11默认网关是192.168.91.2
+web12把默认网关执行web11, ping wwww.baidu.com
+web11 发icmp重定向功能,让web11路由缓冲区加一条192.168.91.2的路由成功ping到wwww.baidu.com
+-----------------------------------------------------------------
+2.环境:
+vmware NAT网关是192.168.91.2
+web11.uplooking.com 192.168.91.187
+web12.uplooking.com 192.168.91.12
+-----------------------------------------------------------------
+
+3.web11:
+vim /etc/sysctl.conf
+net.ipv4.ip_forward = 1
+
+echo 1 > /proc/sys/net/ipv4/conf/all/send_redirects 
+
+ip r:
+default via 192.168.91.2 dev eth2 
+-----------------------------------------------------------------
+4.web12:
+ip route flush cache 清除路由缓存
+echo 1 > /proc/sys/net/ipv4/conf/all/accept_redirects 
+
+route
+Destination     Gateway         Genmask         Flags Metric Ref    Use Iface
+web11.uplooking *               255.255.255.255 UH    0      0        0 eth2
+default         web11.uplooking 0.0.0.0         UG    0      0        0 eth2
+
+ping  www.baidu.com
+PING www.a.shifen.com (61.135.169.125) 56(84) bytes of data.
+From web11.uplooking.com (192.168.91.187): icmp_seq=2 Redirect Host(New nexthop: localhost (192.168.91.2))
+64 bytes from 61.135.169.125: icmp_seq=2 ttl=128 time=21.4 ms
+From web11.uplooking.com (192.168.91.187): icmp_seq=3 Redirect Host(New nexthop: localhost (192.168.91.2))
+64 bytes from 61.135.169.125: icmp_seq=3 ttl=128 time=35.5 ms
+
+查看路由缓存表
+route -Cn
+Source          Destination     Gateway         Flags Metric Ref    Use Iface
+192.168.91.2    192.168.91.12   192.168.91.12   l     0      0        0 lo
+/////////////////////////////////////////////////////////
+3.3 TCP连接的建立和关闭:
+Ubuntu-terminal-one(108):
+[php]
+sudo tcpdump -i wlan0 -ent  '(dst 192.168.1.108 and src 192.168.1.109)or(dst 192.168.1.109 and src 192.168.1.108)' and port 80
+[/php]
+Ubuntu-terminal-two(108):
+[php]
+telnet 192.168.1.109 80
+Trying 192.168.1.109...
+Connected to 192.168.1.109.
+Escape character is '^]'.
+telnet> quit
+[/php]
+/////////////////////////////////////////////////////////
+3.3.3 超时重连:
+Ubuntu:
+[php]
+sudo iptables -F
+sudo iptables -I INPUT -p tcp --syn -i eht0 -j DROP
+[/php]
+Mac-one:
+[php]
+date;telnet 192.168.1.108;date
+[/php]
+Mac-two(必须从Mac抓,从ubuntu抓包只有1个[S]1个[R]):
+[php]
+sudo tcpdump -n -i en0 port 23
+[/php]
+/////////////////////////////////////////////////////////
+3.4.2 TIME_WAIT 状态
+Ubuntu-one:
+[php]
+nc -p 12345 192.168.1.109 80
+nc -p 12345 192.168.1.109 80
+nc: bind failed: Address already in use
+[/php]
+Ubuntu-two:
+[php]
+===========
+sudo netstat -anp tcp|grep 192.168.1.109.80
+tcp        0      0 192.168.1.108:12345     192.168.1.109:80        ESTABLISHED 27548/nc
+ sudo netstat -anp tcp|grep 192.168.1.109.80
+tcp        0      0 192.168.1.108:12345     192.168.1.109:80        TIME_WAIT   -
+[/php]
+/////////////////////////////////////////////////////////
+3.5 复位报文段:
+情况1:访问不存在的端口
+Mac-one:
+[php]
+sudo tcpdump -nt -i e0 port 54321
+listening on e0, link-type EN10MB (Ethernet), capture size 65535 bytes
+IP 192.168.1.109.61451 > 192.168.1.108.54321: Flags [S], seq 181141014, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 600459026 ecr 0,sackOK,eol], length 0
+IP 192.168.1.108.54321 > 192.168.1.109.61451: Flags [R.], seq 0, ack 181141015, win 0, length 0
+[/php]
+Mac-two:
+[php]
+01$sudo telnet 192.168.1.108 54321
+Trying 192.168.1.108...
+telnet: connect to address 192.168.1.108: Connection refused
+telnet: Unable to connect to remote host
+情况2:异常终止连接:
+情况3:处理半打开连接:
+[/php]
+Mac:
+[php]
+nc -l 12345
+[/php]
+
+Ubuntu-one(在传递内容之前断开自己的wifi):
+[php]
+telnet 192.168.1.109 12345
+a
+[/php]
+
+Ubuntu-two(将会看到[R],RST复位报文):
+[php]
+sudo tcpdump -nt -i wlan0 port 12345
+[P.]
+[P.]
+[P.]
+[P.]
+[P.]
+[P.]
+[R]
+[/php]
+
+/////////////////////////////////////////////////////////
+3.6 TCP交互数据流:
+3.7 TCP成块数据流
+sudo apt-get install vsftpd
+sudo useradd -m ftp
+sudo passwd ftp
+1q2w3e
+sudo mkdir /home/ftp
+sudo mkdir /srv/ftp
+sudo chmod 777 /home/ftp
+sudo vi /etc/vsftpd.conf
+write_enable=YES 开启这个
+sudo /etc/init.d/vsftpd restart
+sudo /etc/init.d/vsftpd start
+sudo /etc/init.d/vsftpd stop
+
+ps -ef|grep ftp
+sudo netstat -npltu | grep 22
+
+Mac-one:
+[php]
+ftp 127.0.0.1
+Name (127.0.0.1:wcybxzj): wcybxzj
+1q2w3e
+cd /home/wcybxzj/py_www
+get 1.mp4
+[/php]
+Mac-two:
+[php]
+sudo tcpdump -nt -i en0
+[/php]
+////////////////////////////////////////////////////////////
+3.9 TCP超时重传
+Ubuntu:
+[php]
+sudo apt-get install iperf
+ipref -s
+[/php]
+Mac-one(连接后,发送数据前给Ubuntu断网):
+[php]
+telnet 192.168.1.102 5001
+[/php]
+
+Mac-two:
+[php]
+sudo tcpdump -nt -i en0 port 5001
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [S], seq 1648090201, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 650245970 ecr 0,sackOK,eol], length 0
+IP 192.168.1.102.5001 > 192.168.1.109.62682: Flags [S.], seq 1071522091, ack 1648090202, win 14480, options [mss 1460,sackOK,TS val 2801385 ecr 650245970,nop,wscale 6], length 0
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [.], ack 1, win 8235, options [nop,nop,TS val 650246074 ecr 2801385], length 0
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [P.], seq 1:8, ack 1, win 8235, options [nop,nop,TS val 650296350 ecr 2801385], length 7
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [P.], seq 1:8, ack 1, win 8235, options [nop,nop,TS val 650304704 ecr 2801385], length 7
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [P.], seq 1:8, ack 1, win 8235, options [nop,nop,TS val 650313103 ecr 2801385], length 7
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [P.], seq 1:8, ack 1, win 8235, options [nop,nop,TS val 650321502 ecr 2801385], length 7
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [P.], seq 1:8, ack 1, win 8235, options [nop,nop,TS val 650329916 ecr 2801385], length 7
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [P.], seq 1:8, ack 1, win 8235, options [nop,nop,TS val 650338436 ecr 2801385], length 7
+IP 192.168.1.109.62682 > 192.168.1.102.5001: Flags [R.], seq 8, ack 1, win 8235, length 0
+[/php]
+///////////////////////////////////////////////////////////////////////////////
+
+4.2.2 部署squid代理服务器:
+Ubuntu:
+sudo apt-get install squid squid-common
+sudo vi /etc/squid3/squid.conf
+[php]
+acl my_network src 192.168.0.109
+http_access allow my_network
+http_port 192.168.1.102:3218
+[/php]
+sudo service squid3 restart
+sudo tcpdump -s 2000 -i wlan0 -ntS '(src 192.168.1.102) or (dst 192.168.1.102) or (arp)
+
+Mac-one:
+[php]
+sudo arp -d 192.168.1.1
+export http_proxy="192.168.1.102:3218" (102是ubuntu)
+wget --header="Connection: close" http://www.baidu.com/index.html
+[/php]
+

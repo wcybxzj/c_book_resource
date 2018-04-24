@@ -1,0 +1,575 @@
+Linux高性能服务器编程(第二篇深入解析高性能服务器编程:第5章Linux网络编程基础API):
+5.4 监听socket(listen):
+5-3.testlisten.c
+[php]
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <signal.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <libgen.h>
+#include <stdio.h>
+#include <string.h>
+
+#define bool int
+#define true 0x0001
+#define false 0x0000
+static bool stop = false;
+
+static void handle_term(){
+	stop = true;
+}
+
+int main(int argc, char *argv[])
+{
+	signal(SIGTERM, handle_term);
+	if (argc<= 3) {
+		printf("usage: %s ip port backlog\n", basename( argv[0] ));
+		return 1;
+	}
+
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	int backlog = atoi( argv[3] );
+	int sock = socket( PF_INET, SOCK_STREAM, 0 );
+	assert(sock >=0);
+
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip , &address.sin_addr );
+	address.sin_port = htons( port );
+
+	int ret = bind( sock, ( struct sockaddr* )&address, sizeof( address ) );
+	assert(ret !=-1);
+
+	ret = listen( sock, backlog );
+	assert(ret !=-1);
+
+	while ( ! stop ) {
+		printf("sleeping here\n");
+		sleep( 1 );
+	}
+	close( sock );
+	return 0;
+}
+[/php]
+mac:
+[php]
+./a.out 192.168.1.109 12345 5
+[/php]
+
+ubuntu-1到ubuntu6:
+[php]
+telnet 192.168.1.109 12345
+[/php]
+
+ubuntu-7:
+[php]
+tcp        0      0 192.168.1.102:49880     192.168.1.109:12345     ESTABLISHED
+tcp        0      0 192.168.1.102:49881     192.168.1.109:12345     ESTABLISHED
+tcp        0      0 192.168.1.102:49882     192.168.1.109:12345     ESTABLISHED
+tcp        0      1 192.168.1.102:49884     192.168.1.109:12345     SYN_SENT
+tcp        0      0 192.168.1.102:49883     192.168.1.109:12345     ESTABLISHED
+tcp        0      0 192.168.1.102:49879     192.168.1.109:12345     ESTABLISHED
+[/php]
+
+///////////////////////////////////////////////////////////////////////////////
+5.5接受连接(accept):
+5-5.testaccept.c
+[php]
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <libgen.h>
+#include <string.h>
+#include <errno.h>
+#include <assert.h>
+
+int main(int argc, char *argv[])
+{
+	if (argc <= 2) {
+		printf("usage: %s ip port\n",basename( argv[0] ));
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &address.sin_addr );
+	address.sin_port = htons( port );
+
+	int sock = socket(PF_INET, SOCK_STREAM, 0);
+	assert( sock >= 0 );
+
+	int ret = bind( sock, (struct sockaddr*)&address, sizeof( address ));
+	assert( ret >= 0 );
+
+	ret = listen( sock, 5);
+	assert( ret >= 0 );
+
+	sleep(30);//等待客户端掉线或者退出
+	struct sockaddr_in client;
+	socklen_t client_addrlength = sizeof( client );
+	int connfd =accept( sock, ( struct sockaddr* )&client, &client_addrlength );
+	if (connfd < 0 ) {
+		printf("errno is %d\n", errno);
+	}else{
+		char remote[INET_ADDRSTRLEN];
+		printf("connected with ip: %s and port %d\n",
+				inet_ntop( AF_INET, &client.sin_addr, remote, INET_ADDRSTRLEN ),ntohs( client.sin_port ) );
+		close( connfd );
+	}
+
+	return 0;
+}
+[/php]
+Mac-one:
+[php]
+./a.out 192.168.1.109 54321
+connected with ip: 192.168.1.102 and port 56112
+[/php]
+
+情况1:在服务启动50秒内,断开客户端网络
+Ubuntu-one:
+[php]
+telnet 192.168.1.109 54321
+[/php]
+
+Mac-two:
+[php]
+netstat -ant|grep 54321
+tcp4       0      0  192.168.1.109.54321    192.168.1.102.56112    ESTABLISHED
+tcp4       0      0  192.168.1.109.54321    *.*                    LISTEN
+[/php]
+
+情况2:在服务启动50秒内,正常退出客户端
+Ubuntu-one:
+[php]
+telnet 192.168.1.109 54321
+[/php]
+
+Mac-two:
+[php]
+netstat -ant|grep 54321
+tcp4       0      0  192.168.1.109.54321    192.168.1.102.56112    CLOSE_WAIT
+tcp4       0      0  192.168.1.109.54321    *.*                    LISTEN
+[/php]
+
+说明accept 只是从监听队列取sock,不在乎状态或者网络情况
+
+///////////////////////////////////////////////////////////////////////////////
+5.7 关闭连接
+当socket的引用计数为0的时候才会关闭
+fork后引用计数加1，所以子进程也需要close()
+close():
+只是将socket的引用计数减1
+shutdown():
+可以直接关闭不考虑引用计数
+提供了半关闭的功能
+///////////////////////////////////////////////////////////////////////////////
+5.8.1 TCP数据读写
+read/write 也可以读写
+TCP数据流专用函数recv/send 可以提供更多控制,flags支队当前调用有效果,setsockopt永久修改socket的某些属性.
+recv返回为0的时候,说明对方连接已经关闭
+5-7.oobrecv.c:
+[php]
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <errno.h>
+#include <libgen.h>
+#include <assert.h>
+#include <unistd.h>
+#define BUF_SIZE 1024
+int main(int argc, char *argv[])
+{
+	if ( argc <= 2 ) {
+		printf("usage: %s ip port\n", basename( argv[0]) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET ,ip ,&address.sin_addr);
+	address.sin_port = htons( port );
+
+	int sock = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( sock >= 0 );
+
+	int ret = bind( sock, ( struct sockaddr* )&address, sizeof( address ) );
+	assert( sock != -1 );
+
+	ret = listen( sock, 5 );
+	assert( ret != -1 );
+
+	struct sockaddr_in client;
+	socklen_t client_addrlength = sizeof( client );
+	int connfd = accept(sock, ( struct sockaddr* )&client, &client_addrlength );
+
+	if (connfd < 0) {
+		printf( "errno is %d\n", errno );
+	}else {
+		char buffer[ BUF_SIZE ];
+		memset( buffer,'\0' ,BUF_SIZE-1 );
+		ret = recv( connfd, buffer, BUF_SIZE-1, 0 );
+		printf("got %d bytes of normal data '%s'\n", ret, buffer);
+
+		memset( buffer,'\0' ,BUF_SIZE-1 );
+		ret = recv( connfd, buffer, BUF_SIZE-1, MSG_OOB );
+		printf("got %d bytes of oob data '%s'\n", ret, buffer);
+
+		memset( buffer,'\0' ,BUF_SIZE-1 );
+		ret = recv( connfd, buffer, BUF_SIZE-1, 0 );
+		printf("got %d bytes of normal data '%s'\n", ret, buffer);
+	}
+
+	//获取本地和远程的ip addr和port
+	unsigned int len;
+	struct sockaddr_in local_address, remote_address;
+	len = sizeof( local_address );
+	getsockname( connfd, ( struct sockaddr* )&local_address, &len );
+	printf( "Local IP address is: %s\n", inet_ntoa( local_address.sin_addr ) );
+	printf("Local port is: %d\n", (int) ntohs(local_address.sin_port));
+
+	getpeername( connfd, ( struct sockaddr* )&remote_address, &len );
+	printf( "Local IP address is: %s\n", inet_ntoa( remote_address.sin_addr ) );
+	printf("Local port is: %d\n", (int) ntohs(remote_address.sin_port));
+
+	close( connfd );
+	return 0;
+}
+
+[/php]
+5-6.oobsend.c:
+[php]
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <libgen.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <unistd.h>
+
+int main(int argc, char *argv[])
+{
+	if (argc <= 2) {
+		printf("usage: %s ip port\n", basename( argv[0] ) );
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+
+	struct sockaddr_in server_address;
+	bzero( &server_address, sizeof( server_address ) );
+	server_address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &server_address.sin_addr );
+	server_address.sin_port = htons( port );
+
+	int sockfd = socket(PF_INET, SOCK_STREAM, 0);
+	assert( sockfd >= 0 );
+
+	if ( connect( sockfd, ( struct sockaddr* )&server_address, sizeof( server_address) ) < 0 ) {
+		printf("connection failed\n");
+	}else {
+		printf("send oob data out\n");
+		const char* oob_data = "abc";
+		const char* normal_data = "123";
+		send( sockfd, normal_data, strlen( normal_data ), 0);
+		send( sockfd, oob_data, strlen( oob_data ), MSG_OOB);
+		send( sockfd, normal_data, strlen( normal_data ), 0);
+	}
+	close( sockfd );
+	return 0;
+}
+[/php]
+
+
+Mac-one:
+[php]
+sudo tcpdump -ntx -i e0 port 54321
+IP 192.168.1.102.59110 > 192.168.1.109.54321: Flags [S], seq 2991948872, win 14600, options [mss 1460,sackOK,TS val 1911969 ecr 0,nop,wscale 6], length 0
+	0x0000:  4500 003c a8e9 4000 4006 0daf c0a8 0166
+	0x0010:  c0a8 016d e6e6 d431 b255 8448 0000 0000
+	0x0020:  a002 3908 6c60 0000 0204 05b4 0402 080a
+	0x0030:  001d 2ca1 0000 0000 0103 0306
+IP 192.168.1.109.54321 > 192.168.1.102.59110: Flags [S.], seq 1760623529, ack 2991948873, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 746676852 ecr 1911969,sackOK,eol], length 0
+	0x0000:  4500 0040 4a53 4000 4006 6c41 c0a8 016d
+	0x0010:  c0a8 0166 d431 e6e6 68f0 fba9 b255 8449
+	0x0020:  b012 ffff a0c4 0000 0204 05b4 0103 0304
+	0x0030:  0101 080a 2c81 6274 001d 2ca1 0402 0000
+IP 192.168.1.102.59110 > 192.168.1.109.54321: Flags [.], ack 1760623530, win 229, options [nop,nop,TS val 1911971 ecr 746676852], length 0
+	0x0000:  4500 0034 a8ea 4000 4006 0db6 c0a8 0166
+	0x0010:  c0a8 016d e6e6 d431 b255 8449 68f0 fbaa
+	0x0020:  8010 00e5 dfab 0000 0101 080a 001d 2ca3
+	0x0030:  2c81 6274
+IP 192.168.1.109.54321 > 192.168.1.102.59110: Flags [.], ack 2991948873, win 8235, options [nop,nop,TS val 746676861 ecr 1911971], length 0
+	0x0000:  4500 0034 d3d1 4000 4006 e2ce c0a8 016d
+	0x0010:  c0a8 0166 d431 e6e6 68f0 fbaa b255 8449
+	0x0020:  8010 202b c05c 0000 0101 080a 2c81 627d
+	0x0030:  001d 2ca3
+IP 192.168.1.102.59110 > 192.168.1.109.54321: Flags [P.], seq 2991948873:2991948876, ack 1760623530, win 229, options [nop,nop,TS val 1911971 ecr 746676852], length 3
+	0x0000:  4500 0037 a8eb 4000 4006 0db2 c0a8 0166
+	0x0010:  c0a8 016d e6e6 d431 b255 8449 68f0 fbaa
+	0x0020:  8018 00e5 7b6e 0000 0101 080a 001d 2ca3
+	0x0030:  2c81 6274 3132 33
+IP 192.168.1.102.59110 > 192.168.1.109.54321: Flags [P.U], seq 2991948876:2991948879, ack 1760623530, win 229, urg 3, options [nop,nop,TS val 1911971 ecr 746676852], length 3
+	0x0000:  4500 0037 a8ec 4000 4006 0db1 c0a8 0166
+	0x0010:  c0a8 016d e6e6 d431 b255 844c 68f0 fbaa
+	0x0020:  8038 00e5 1b18 0003 0101 080a 001d 2ca3
+	0x0030:  2c81 6274 6162 63
+[/php]
+下面的包省略
+Mac-two:
+[php]
+./oobrecv 192.168.1.109 54321
+got 3 bytes of normal data '123'
+got 1 bytes of oob data 'c'
+got 2 bytes of normal data 'ab'
+[/php]
+///////////////////////////////////////////////////////////////////////////////
+5.8.2 UDP数据读写:
+recvfrom()/sendto() 专门用于UDP,也可用于TCP
+///////////////////////////////////////////////////////////////////////////////
+5.8.3 通用数据读写函数:
+recvmsg()/sendmsg()
+///////////////////////////////////////////////////////////////////////////////
+5.9 带外标记:
+sockatmark() 判断sockfd是否是带外数据,如果是recv MSG_OOB
+///////////////////////////////////////////////////////////////////////////////
+5.10 地址信息函数:
+远程addr和ip:getpeername() / 本地addr和ip:getsockname()
+///////////////////////////////////////////////////////////////////////////////
+5.11.1 SO_REUSEADDR选项:
+另外一种强制使用被处于TIME_WAIT状态socket方法:/proc/sys/net/ipv4/tcp_tw_recycle
+5.11.2 SO_RCVBUF和SO_SNDBUF
+tcp接受缓冲区:最小256字节
+tcp发送缓冲区:最小2048字节
+socket 读写缓冲区:
+/proc/sys/net/ipv4/tcp_rmem
+/proc/sys/net/ipv4/tcp_wmem
+5-10.set_send_buffer.c
+[php]
+#include <stdio.h>
+#include <libgen.h>
+#include <stdlib.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <unistd.h>
+
+#define BUFFER_SIZE 512
+
+int main(int argc, char *argv[])
+{
+	if ( argc <= 3 ) {
+		printf("usage: %s ip port send_buffer_size\n", basename( argv[0] ) );
+		return 1;
+	}
+
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	int sendbuf = atoi( argv[3] );
+	int len = sizeof( sendbuf );
+
+	struct sockaddr_in server_address;
+	bzero( &server_address, sizeof( server_address ) );
+	server_address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip ,&server_address.sin_addr );
+	server_address.sin_port = htons( port );
+
+	int sock = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( sock >= 0 );
+
+	setsockopt( sock, SOL_SOCKET, SO_SNDBUF, &sendbuf, len );
+	getsockopt( sock, SOL_SOCKET, SO_SNDBUF, &sendbuf,( socklen_t* )&len );
+
+	printf("the tcp send buffer size after setting is %d\n", sendbuf);
+
+	if ( connect( sock, ( struct sockaddr* )&server_address, sizeof( server_address ) ) != -1) {
+		char buffer[ BUFFER_SIZE ];
+		memset( buffer, 'a', BUFFER_SIZE );
+		send( sock, buffer, BUFFER_SIZE, 0 );
+	}
+
+	close( sock );
+	return 0;
+}
+[/php]
+5-11.set_recv_buffer.c:
+[php]
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <stdio.h>
+#include <libgen.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+
+#define BUFFER_SIZE 1024
+
+int main(int argc, char *argv[])
+{
+	if ( argc <= 3 ) {
+		printf("useage: %s ip port recv buffer size\n", basename( argv[0] ) );
+		return 1;
+	}
+
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &address.sin_addr);
+	address.sin_port = htons( port );
+
+	int sock = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( sock >= 0 );
+	int recvbuf = atoi( argv[3] );
+	int len = sizeof( recvbuf );
+	setsockopt( sock, SOL_SOCKET, SO_RCVBUF, &recvbuf , len );
+	getsockopt( sock, SOL_SOCKET, SO_RCVBUF, &recvbuf , ( socklen_t* )&len );
+	printf("the receive buffer size after setting is  %d", recvbuf);
+
+	int ret = bind( sock, ( struct sockaddr* )&address ,sizeof( address )  );
+	assert( ret != 1 );
+
+	ret = listen( sock ,5 );
+	assert( ret != 1 );
+
+	struct sockaddr_in client;
+	socklen_t client_addrlength = sizeof( client );
+	int connfd = accept( sock, ( struct sockaddr * )&client, &client_addrlength );
+	if ( connfd < 0 ) {
+		printf("errno is: %d\n", errno);
+	}else {
+		char buffer[ BUFFER_SIZE ];
+		memset( buffer, '\0', BUFFER_SIZE );
+		while ( recv( connfd, buffer, BUFFER_SIZE-1, 0 ) > 0 ) { }
+		close( connfd );
+	}
+
+	close( sock );
+
+	return 0;
+}
+
+[/php]
+
+Mac-one:
+[php]
+./set_send_buffer 192.168.1.109 12345 2000
+[/php]
+
+Mac-two:
+[php]
+sudo tcpdump -ant -i en0 port 12345
+IP 192.168.1.109.64867 > 192.168.1.102.12345: Flags [S], seq 3704052447, win 65535, options [mss 1460,nop,wscale 4,nop,nop,TS val 783835608 ecr 0,sackOK,eol], length 0
+IP 192.168.1.102.12345 > 192.168.1.109.64867: Flags [S.], seq 3282022359, ack 3704052448, win 1140, options [mss 1460,sackOK,TS val 314901 ecr 783835608,nop,wscale 0], length 0
+IP 192.168.1.109.64867 > 192.168.1.102.12345: Flags [.], ack 3282022360, win 8235, options [nop,nop,TS val 783835613 ecr 314901], length 0
+IP 192.168.1.109.64867 > 192.168.1.102.12345: Flags [P.], seq 3704052448:3704052960, ack 3282022360, win 8235, options [nop,nop,TS val 783835613 ecr 314901], length 512
+IP 192.168.1.109.64867 > 192.168.1.102.12345: Flags [F.], seq 3704052960, ack 3282022360, win 8235, options [nop,nop,TS val 783835613 ecr 314901], length 0
+IP 192.168.1.102.12345 > 192.168.1.109.64867: Flags [.], ack 3704052960, win 628, options [nop,nop,TS val 314905 ecr 783835613], length 0
+IP 192.168.1.102.12345 > 192.168.1.109.64867: Flags [F.], seq 3282022360, ack 3704052961, win 628, options [nop,nop,TS val 314905 ecr 783835613], length 0
+IP 192.168.1.109.64867 > 192.168.1.102.12345: Flags [F.], seq 3704052960, ack 3282022360, win 8235, options [nop,nop,TS val 783835630 ecr 314905], length 0
+IP 192.168.1.109.64867 > 192.168.1.102.12345: Flags [.], ack 3282022361, win 8235, options [nop,nop,TS val 783835630 ecr 314905], length 0
+IP 192.168.1.102.12345 > 192.168.1.109.64867: Flags [.], ack 3704052961, win 628, options [nop,nop,TS val 314907 ecr 783835630,nop,nop,sack 1 {3704052960:3704052961}], length 0
+[/php]
+
+Ubuntu:
+[php]
+./set_recv_buffer 192.168.1.102 12345 50
+[/php]
+///////////////////////////////////////////////////////////////////////////////
+5.11.3 SO_RECVLOWAT 和 SO_SNDLOWAT选项
+低水位用于，io复用select的读写条件判断
+///////////////////////////////////////////////////////////////////////////////
+5.11.4 SO_LINGER选项
+///////////////////////////////////////////////////////////////////////////////
+5.12 网络信息API
+telnet localhost www 下面讲解如何实现
+///////////////////////////////////////////////////////////////////////////////
+5.12.1 gethostbyname/gethostbyaddr
+根据名称获取主机信息:
+gethostbyname()->/etc/hosts->dns
+更具ip获取主机信息:
+gethostbyaddr()
+///////////////////////////////////////////////////////////////////////////////
+5.12.2 getservbyname 和 getservbyport
+都是通过/etc/services 获取服务信息
+添加Mac:/etc/hosts:192.168.1.108 wcybxzj
+5-12.access_daytime.c:
+[php]
+#include <stdio.h>
+#include <assert.h>
+#include <netdb.h>
+#include <unistd.h>
+
+int main(int argc, char *argv[])
+{
+	assert( argc == 2 );
+	char *host = argv[1];
+	struct hostent* hostinfo = gethostbyname( host );
+	assert( hostinfo );
+	struct servent* servinfo = getservbyname( "daytime", "tcp" );
+	assert( servinfo );
+	printf( "daytime port is %d\n", ntohs( servinfo->s_port ) );
+
+	struct sockaddr_in address;
+	address.sin_family = AF_INET;
+	address.sin_port = servinfo->s_port;
+	address.sin_addr = *( struct in_addr* )*hostinfo->h_addr_list;
+
+	int sockfd = socket( AF_INET, SOCK_STREAM, 0 );
+	int result = connect( sockfd, ( struct sockaddr* )&address, sizeof( address ) );
+	assert( result != -1 );
+
+	char buffer[128];
+	result = read( sockfd, buffer ,sizeof( buffer ) );
+	assert( result > 0 );
+	buffer[ result ] = '\0';
+	printf("the day time is: %s\n", buffer);
+	close( sockfd );
+	return 0;
+}
+[/php]
+./a.out wcybxzj
+daytime port is 13
+the day time is: 05 SEP 2014 20:14:55 CST
+///////////////////////////////////////////////////////////////////////////////
+5.12.3 getaddrinfo/freeaddrinfo:
+获取地址信息
+内部使用gethostname,使用主机名获得ip.
+内部使用getservbyname,也能使用服务名获得端口号.
+------------------------------------------
+5.12.4 getnameinfo:
+gethostbyaddr/getservbyport
+gai_strerror 将错误码转换成字符
+[php]
+#include <stdio.h>
+#include <netdb.h>
+int main(int argc, const char *argv[])
+{
+	char *str = gai_strerror(EAI_FAIL);
+	printf("%s\n", str);
+	return 0;
+}
+[/php]

@@ -1,0 +1,143 @@
+Linux高性能服务器编程(第二篇深入解析高性能服务器编程:第7章Liunx服务器程序规范)
+7.1日志
+//////////////////////////////////////////////////////////////////////////////
+7.2用户信息
+//////////////////////////////////////////////////////////////////////////////
+7.2.1 UID,EUID,GID和EGID
+EUID的目的是方便资源访问,使得运行程序的用户拥有该程序的有效用户的权限
+典型例子是su,普通用户通过su中的set-user-id访问,只有root能访问的/etc/passwd
+-rwsr-xr-x   1 root        wheel     21488 10 28  2013 su
+7-1.testeuid.c
+[php]
+#include <stdio.h>
+#include <unistd.h>
+int main(int argc, const char *argv[])
+{
+	uid_t uid = getuid();
+	uid_t euid = geteuid();
+	printf( "userid is %d, effective userid is: %d\n", uid, euid );
+	return 0;
+}
+[/php]
+./a.out
+userid is 501, effective userid is: 501
+sudo chown  root:wheel a.out
+sudo chmod +s a.out
+id root
+uid=0(root) gid=0(wheel) groups=0(wheel)
+./a.out
+userid is 501, effective userid is: 0
+501是当前登录用户id 0是,root用户id
+//////////////////////////////////////////////////////////////////////////////
+7.2.2 切换用户
+7-2.switchuser.cpp
+[php]
+#include <stdio.h>
+#include <unistd.h>
+static bool switch_to_user( uid_t user_id, gid_t gp_id )
+{
+	if ( ( user_id == 0 ) && ( gp_id == 0 ) )
+	{
+		return false;
+	}
+	gid_t gid = getgid();
+	uid_t uid = getuid();
+	printf( "current userid is %d, getgid is: %d\n", uid, gid);
+	if ( ( ( gid != 0 ) || ( uid != 0 ) ) && ( ( gid != gp_id ) || ( uid != user_id ) ) )
+	{
+		return false;
+	}
+	if ( uid != 0 )
+	{
+		return true;
+	}
+	if ( ( setgid( gp_id ) < 0 ) || ( setuid( user_id ) < 0 ) )
+	{
+		return false;
+	}
+	return true;
+}
+int main(int argc, const char *argv[])
+{
+	switch_to_user( 501, 20);
+	uid_t uid = getuid();
+	uid_t gid = getgid();
+	printf( "change to userid is %d, getgid is: %d\n", uid, gid);
+	return 0;
+}
+[/php]
+
+sudo su #切换到root,exit返回原来用户 然后切换到uid:yangbignxi(501) gid:staff(20)
+#whoami
+root
+g++ 7-2.switchuser.cpp
+./a.out
+current userid is 0, getgid is: 0
+userid is 501, getgid is: 20
+//////////////////////////////////////////////////////////////////////////////
+7.3 进程间关系
+7.3.1 进程组
+每个进程组有一个首领进程,pgid等于进程首领进程id
+getpgid()/setpgid()
+//////////////////////////////////////////////////////////////////////////////
+7.3.2 会话
+一些有关联的进程组形成一个会话
+setsid()/getsid()
+//////////////////////////////////////////////////////////////////////////////
+7.3.3 用ps查看进程关系
+ps -o pid,ppid,pgid,sid,comm|less
+PID  PPID  PGID   SID COMMAND
+ 2439  2438  2439  2439 bash
+ 2486  2439  2486  2439 ps
+ 2487  2439  2486  2439 less
+//////////////////////////////////////////////////////////////////////////////
+7.4 系统资源限制
+getrlimit()/getrlimit()
+//////////////////////////////////////////////////////////////////////////////
+7.5 改变工作目录和根目录
+getcwd()/chdir()/chroot()
+//////////////////////////////////////////////////////////////////////////////
+7.6 服务器程序后台化
+daemon函数(only work in ubuntu)
+7-3.daemonize.cpp
+[php]
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+bool daemonize();
+int main(int argc, const char *argv[])
+{
+	daemonize();
+	return 0;
+}
+bool daemonize(){
+	pid_t pid = fork();
+	printf( "%d\n", pid );
+	sleep(20);
+	if ( pid < 0 ) {
+		return false;
+	}else if( pid > 0 ) {
+		exit( 0 );
+	}
+	umask( 0 );
+	pid_t sid = setsid();
+	if ( sid < 0 ) {
+		return false;
+	}
+	if ( ( chdir( "/" ) ) < 0 ) {
+		return false;
+	}
+	close( STDIN_FILENO );
+	close( STDOUT_FILENO );
+	close( STDERR_FILENO );
+	open( "/dev/null", O_RDONLY );
+	open( "/dev/null", O_RDWR );
+	open( "/dev/null", O_RDWR );
+	return false;
+}
+[/php]
+g++ 7-3.daemonize.cpp
+//////////////////////////////////////////////////////////////////////////////
+//////////////////////////////////////////////////////////////////////////////

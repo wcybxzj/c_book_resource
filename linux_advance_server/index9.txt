@@ -1,0 +1,1077 @@
+Linux高性能服务器编程(第二篇深入解析高性能服务器编程:第9章IO复用)
+9.1 select 系统调用:
+//////////////////////////////////////////////////////////////////////////////
+9.1.1 select api
+//////////////////////////////////////////////////////////////////////////////
+9.1.2 文件描述符就绪条件
+//////////////////////////////////////////////////////////////////////////////
+9.1.3 处理带外数据(方法1)
+9-1.use_select.c:
+[php]
+#include <sys/socket.h>
+#include <stdio.h>
+#include <libgen.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <errno.h>
+int main(int argc, char *argv[])
+{
+	if ( argc <= 2) {
+		printf("useage: %s ip port\n", basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	printf("ip is %s and port is %d\n", ip, port);
+
+	int ret = 0;
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &address.sin_addr );
+	address.sin_port = htons( port );
+
+	int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( listenfd >= 0);
+	ret = bind( listenfd, (struct sockaddr* )&address, sizeof( address ) );
+	assert( ret != -1 );
+	ret = listen( listenfd, 5 );
+	assert( ret != -1);
+
+	struct sockaddr_in client_address;
+	socklen_t client_addrlength = sizeof( client_address );
+	int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+	if ( connfd < 0 ) {
+		printf("errno is: %d\n", errno );
+		close( listenfd );
+	}
+
+	char remote_addr[INET_ADDRSTRLEN];
+	printf( "connect with ip: %s and port: %d\n", inet_ntop( AF_INET, &client_address.sin_addr, remote_addr, INET_ADDRSTRLEN ), ntohs( client_address.sin_port ) );
+
+	char buf[1024];
+	fd_set read_fds;
+	fd_set exception_fds;
+	FD_ZERO( &read_fds );
+	FD_ZERO( &exception_fds );
+
+	int so_oobinline = 1;
+	setsockopt( connfd, SOL_SOCKET, SO_OOBINLINE, &so_oobinline, sizeof( so_oobinline ) );
+	while ( 1 ) {
+		memset( buf, '\0', sizeof( buf ) );
+		FD_SET( connfd, &read_fds );
+		FD_SET( connfd, &exception_fds );
+		ret = select( connfd + 1, &read_fds, NULL, &exception_fds, NULL);
+		printf("select one\n");
+		if ( ret < 0 ) {
+			printf("selection failure\n");
+			break;
+		}
+		if ( FD_ISSET( connfd, &read_fds ) ){
+			ret = recv( connfd, buf, sizeof( buf )-1, 0 );
+			if ( ret <= 0 ) {
+				break;
+			}
+			printf("get %d bytes of normal data: %s\n", ret, buf);
+		}else if ( FD_ISSET( connfd, &exception_fds ) ) {
+			ret = recv( connfd, buf, sizeof( buf )-1, MSG_OOB );
+			if ( ret <= 0 ) {
+				break;
+			}
+			printf("get %d bytes of oob data:%s\n", ret, buf );
+		}
+	}
+	close( connfd );
+	close( listenfd );
+	return 0;
+}
+[/php]
+Mac-one:
+[php]
+9$./a.out 127.0.0.1 12345
+ip is 127.0.0.1 and port is 12345
+connect with ip: 127.0.0.1 and port: 51579
+select one
+get 5 bytes of normal data: 123ab
+select one
+get 4 bytes of normal data: c123
+select one
+[/php]
+Mac-two:
+[php]
+5$./a.out 127.0.0.1 12345
+send oob data out
+[/php]
+//////////////////////////////////////////////////////////////////////////////
+9.2 poll系统调用
+//////////////////////////////////////////////////////////////////////////////
+9.3 epoll系列系统调用
+9.3.1 内核事件
+epoll_create/epoll_ctl/epoll_wait/
+//////////////////////////////////////////////////////////////////////////////
+9.3.2 epoll_wait 函数
+//////////////////////////////////////////////////////////////////////////////
+9.3.3 LT 和ET 模式
+9-3.mtlt.cpp:
+[php]
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/epoll.h>
+#define MAX_EVENT_NUMBER 1024
+#define BUFFER_SIZE 10
+char* is_block;
+int setnonblocking( int fd ){
+	int old_option = fcntl( fd, F_GETFL );
+	int new_option = old_option | O_NONBLOCK;
+	fcntl( fd, F_SETFL, new_option );
+	return old_option;
+}
+void addfd( int epollfd, int fd, int enable_et ){
+	epoll_event event;
+	event.data.fd = fd;
+	event.events = EPOLLIN;
+	if ( enable_et ) {
+		event.events |= EPOLLET;
+	}
+	epoll_ctl( epollfd, EPOLL_CTL_ADD, fd, &event );
+	if ( strncmp( is_block, "unblock" ,5) == 0 ) {
+		setnonblocking( fd );
+	}
+}
+void lt( epoll_event* events, int number ,int epollfd, int listenfd ){
+	char buf[ BUFFER_SIZE ];
+	printf("lt number %d\n", number);
+	for (int i = 0; i < number; i++) {
+		int sockfd = events[i].data.fd;
+		if ( sockfd == listenfd ) {
+			printf("sockfd == listenfd \n");
+			struct sockaddr_in client_address;
+			socklen_t client_addrlength = sizeof( client_address );
+			int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+			addfd( epollfd, connfd, 0 );
+		}else if ( events[i].events & EPOLLIN ) {
+			printf("lt event trigger once\n");
+			memset( buf, '\0', BUFFER_SIZE );
+			int ret = recv( sockfd, buf, BUFFER_SIZE-1, 0 );
+			if ( ret <= 0 ) {
+				close( sockfd );
+				printf("ret <=0 close sockfd \n");
+				continue;
+			}
+			printf( "get %d bytes of content: %s\n", ret, buf );
+		}else{
+			printf("something else happened \n");
+		}
+	}
+}
+void et( epoll_event* events, int number,int epollfd , int listenfd ){
+	char buf[ BUFFER_SIZE ];
+	printf("et number %d\n", number);
+	for ( int i = 0; i < number; i++ ) {
+		int sockfd = events[i].data.fd;
+		if ( sockfd == listenfd ) {
+			printf("sockfd == listenfd \n");
+			struct sockaddr_in client_address;
+			socklen_t client_addrlength = sizeof( client_address );
+			int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+			addfd( epollfd, connfd, 1 );
+		}else if ( events[i].events & EPOLLIN ) {
+			printf("et event trigger once\n");
+			while ( 1 ) {
+				memset( buf, '\0', BUFFER_SIZE );
+				printf("et block recv!!!!!\n");
+				int ret = recv( sockfd, buf, BUFFER_SIZE-1, 0 );
+				printf("et unblock recv!!!!!\n");
+				if ( ret < 0 ) {
+					if ( ( errno == EAGAIN ) || (errno == EWOULDBLOCK ) ) {
+						printf("read later\n");
+						break;
+					}
+					close( sockfd );
+					printf("ret < 0 close sockfd \n");
+					break;
+				}else if ( ret == 0 ) {
+					close( sockfd );
+					printf("ret == 0 close sockfd \n");
+				}else {
+					printf("get %d bytes of content: %s\n", ret, buf );
+				}
+			}
+		}else {
+			printf("something else happened \n");
+		}
+	}
+}
+int main(int argc, char *argv[])
+{
+	if ( argc <= 3 ) {
+		printf("usage: %s ip port  is_et\n",basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	char* is_et = argv[3];
+	is_block = argv[4];
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	address.sin_port = htons( port );
+	inet_pton( AF_INET, ip, &address.sin_addr );
+	int ret = 0;
+	int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( listenfd >= 0 );
+    int reuse = 1;
+    setsockopt( listenfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof( reuse ) );
+	ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+	assert( ret != -1 );
+	ret = listen( listenfd, 5 );
+	assert( ret != -1 );
+	epoll_event events[ MAX_EVENT_NUMBER ];
+	int epollfd = epoll_create( 5 );
+	assert( epollfd != -1 );
+	addfd( epollfd, listenfd, 1 );
+	while ( 1 ) {
+		printf("blocked in epoll_wait\n");
+		int ret = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );
+		printf("unblocked in epoll_wait\n");
+		if ( ret < 0) {
+			printf("epoll failure\n");
+			break;
+		}
+		if ( strncmp( is_et,"et" ,2) == 0 ) {
+			et( events, ret, epollfd, listenfd );
+		}else {
+			lt( events, ret, epollfd, listenfd );
+		}
+	}
+	close( listenfd );
+	return 0;
+}
+[/php]
+Mac:
+[php]
+telnet 192.168.1.105 12345
+Trying 192.168.1.105...
+Connected to 192.168.1.105.
+Escape character is '^]'.
+111111111111111111
+[/php]
+
+Ububtu(unblock 模式/block 模式,效果一样):
+[php]
+./a.out 192.168.1.105 12345 lt block
+blocked in epoll_wait
+unblocked in epoll_wait
+lt number 1
+sockfd == listenfd
+blocked in epoll_wait
+unblocked in epoll_wait
+lt number 1
+lt event trigger once
+get 9 bytes of content: 111111111
+blocked in epoll_wait
+unblocked in epoll_wait
+lt number 1
+lt event trigger once
+get 9 bytes of content: 111111111
+blocked in epoll_wait
+unblocked in epoll_wait
+lt number 1
+lt event trigger once
+get 2 bytes of content:
+
+blocked in epoll_wait
+[/php]
+
+
+Ububtu(unblock 模式):
+[php]
+./a.out 192.168.1.105 12345 et unblock
+blocked in epoll_wait
+unblocked in epoll_wait
+et number 1
+sockfd == listenfd
+blocked in epoll_wait
+unblocked in epoll_wait
+et number 1
+et event trigger once
+et block recv!!!!!
+et unblock recv!!!!!
+get 9 bytes of content: 111111111
+et block recv!!!!!
+et unblock recv!!!!!
+get 9 bytes of content: 111111111
+et block recv!!!!!
+et unblock recv!!!!!
+get 2 bytes of content:
+
+et block recv!!!!!
+et unblock recv!!!!!
+read later
+blocked in epoll_wait
+[/php]
+
+
+Ububtu(block 模式):
+[php]
+./a.out 192.168.1.105 12345 et block
+blocked in epoll_wait
+unblocked in epoll_wait
+et number 1
+sockfd == listenfd
+blocked in epoll_wait
+unblocked in epoll_wait
+et number 1
+et event trigger once
+et block recv!!!!!
+et unblock recv!!!!!
+get 9 bytes of content: 111111111
+et block recv!!!!!
+et unblock recv!!!!!
+get 9 bytes of content: 111111111
+et block recv!!!!!
+et unblock recv!!!!!
+get 2 bytes of content:
+
+et block recv!!!!!
+[/php]
+
+//////////////////////////////////////////////////////////////////////////////
+9.3.4 epolloneshot 事件
+9-4.oneshot.cpp:
+[php]
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <stdio.h>
+#include <libgen.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <sys/epoll.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <errno.h>
+#define MAX_EVENT_NUMBER 1024
+#define BUFFER_SIZE 1024
+const char* oneshot;
+struct fds{
+	int epollfd;
+	int sockfd;
+};
+int setnonblocking( int fd ){
+	int old_option = fcntl( fd, F_GETFL );
+	int new_option = old_option | O_NONBLOCK;
+	fcntl( fd, F_SETFL, new_option );
+	return old_option;
+}
+void addfd( int epollfd, int fd, int oneshot ){
+	epoll_event event;
+	event.data.fd = fd;
+	event.events = EPOLLIN | EPOLLET;
+	if ( oneshot ) {
+		event.events |= EPOLLONESHOT;
+	}
+	epoll_ctl( epollfd, EPOLL_CTL_ADD, fd, &event );
+	setnonblocking( fd );
+}
+void reset_oneshot( int epollfd, int fd ){
+	epoll_event event;
+	event.data.fd = fd;
+	event.events = EPOLLIN | EPOLLET | EPOLLONESHOT;
+	epoll_ctl( epollfd, EPOLL_CTL_MOD, fd, &event );
+}
+void* worker( void* arg ){
+	int sockfd = ( (fds*)arg )->sockfd;
+	int epollfd = ( (fds*)arg )->epollfd;
+	printf("start new thread to receive data on fd: %d\n", sockfd );
+	char buf[ BUFFER_SIZE ];
+	memset( buf, '\0', BUFFER_SIZE );
+	while ( 1 ) {
+		printf( "006:block recv\n" );
+		int ret = recv( sockfd, buf, BUFFER_SIZE-1, 0 );
+		printf( "007:unblock recv\n" );
+		if ( ret == 0 ) {
+			close( sockfd );
+			printf( "client closed the connection\n" );
+			break;
+		}else if ( ret < 0 ) {
+			if ( errno == EAGAIN ) {
+				printf("EAGAIN\n");
+				if ( strncmp( "oneshot", oneshot,2 ) == 0 ) {
+					reset_oneshot( epollfd, sockfd );
+				}
+				printf("read later\n");
+				break;
+			}
+		}else {
+			pthread_t   tid;
+			tid = pthread_self();
+			printf("thread id is %u\n", (unsigned int)tid);
+			printf("get content: %s\n", buf);
+			sleep( 15 );
+		}
+	}
+}
+int main(int argc, char *argv[])
+{
+	if ( argc <= 3 ) {
+		printf("useage: %s ip port is_oneshot\n", basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	oneshot = argv[3];
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &address.sin_addr );
+	address.sin_port = htons( port );
+	int ret = 0;
+	int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( listenfd >= 0 );
+    int reuse = 1;
+    setsockopt( listenfd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof( reuse ) );
+	ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+	assert( ret != -1 );
+	ret = listen( listenfd, 5 );
+	assert( ret != -1 );
+	epoll_event events[ MAX_EVENT_NUMBER ];
+	int epollfd = epoll_create( 5 );
+	assert( epollfd != -1 );
+	addfd( epollfd, listenfd, 0 );
+	while ( 1 ) {
+		printf( "001:blocked epoll_wait\n" );
+		int ret = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );
+		printf( "002:unblocked epoll_wait\n" );
+		if ( ret < 0 ) {
+			printf("epoll failure\n");
+			break;
+		}
+		printf( "003:ret %d\n", ret );
+		for (int i = 0; i < ret; i++) {
+			int sockfd = events[i].data.fd;
+			if ( sockfd == listenfd ) {
+				printf( "004: sockfd == listenfd  \n" );
+				struct sockaddr_in client_address;
+				socklen_t client_addrlength = sizeof( client_address );
+				int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+				if ( strncmp( "oneshot", oneshot,2 ) == 0 ) {
+					addfd( epollfd, connfd, 1 );
+				}else {
+					addfd( epollfd, connfd, 0 );
+				}
+			}else if ( events[i].events & EPOLLIN ) {
+				printf( "005:events[i].events & EPOLLIN %d\n", i );
+				pthread_t thread;
+				fds fds_for_new_worker;
+				fds_for_new_worker.epollfd = epollfd;
+				fds_for_new_worker.sockfd =sockfd;
+				pthread_create( &thread, NULL, worker, ( void* )&fds_for_new_worker );
+			}else {
+				printf("somethig else happened\n");
+			}
+		}
+	}
+	close( listenfd );
+	return 0;
+}
+[/php]
+Ubuntu:cc 9-4.oneshot.cpp -lpthread
+Mac-one:telnet 只输入数字
+Mac-two:telnet 只输入字母
+
+Ubuntu:
+启动onehsot,服务端只能用一个线程服务一个socket:
+[php]
+./a.out 127.0.0.0.1 12345 oneshot
+001:blocked epoll_wait
+002:unblocked epoll_wait
+003:ret 1
+004: sockfd == listenfd
+001:blocked epoll_wait
+002:unblocked epoll_wait
+003:ret 1
+005:events[i].events & EPOLLIN 0
+001:blocked epoll_wait
+start new thread to receive data on fd: 5
+006:block recv
+007:unblock recv
+thread id is 1347487488
+get content: 11111111111111111111
+
+002:unblocked epoll_wait
+003:ret 1
+004: sockfd == listenfd
+001:blocked epoll_wait
+002:unblocked epoll_wait
+003:ret 1
+005:events[i].events & EPOLLIN 0
+001:blocked epoll_wait
+start new thread to receive data on fd: 6
+006:block recv
+007:unblock recv
+thread id is 1339094784
+get content: qqqqqqqqqqqqqqqqqqqq
+
+006:block recv
+007:unblock recv
+thread id is 1347487488
+get content: 11111111111111111111
+
+006:block recv
+007:unblock recv
+thread id is 1339094784
+get content: qqqqqqqqqqqqqqqqqq
+
+
+006:block recv
+007:unblock recv
+EAGAIN
+read later
+006:block recv
+007:unblock recv
+EAGAIN
+read later
+[/php]
+
+
+Ubuntu:
+不启动oneshot每个socket请求都会出发一个新线程:
+[php]
+./a.out 127.0.0.0.1 12345 nooneshot
+001:blocked epoll_wait
+002:unblocked epoll_wait
+003:ret 1
+004: sockfd == listenfd
+001:blocked epoll_wait
+002:unblocked epoll_wait
+003:ret 1
+004: sockfd == listenfd
+001:blocked epoll_wait
+002:unblocked epoll_wait
+003:ret 1
+005:events[i].events & EPOLLIN 0
+001:blocked epoll_wait
+start new thread to receive data on fd: 5
+006:block recv
+007:unblock recv
+thread id is 342451968
+get content: aaaaaaaaaaaaaa
+
+002:unblocked epoll_wait
+003:ret 1
+005:events[i].events & EPOLLIN 0
+001:blocked epoll_wait
+start new thread to receive data on fd: 5
+006:block recv
+007:unblock recv
+thread id is 334059264
+get content: dddddddddddddddd
+
+002:unblocked epoll_wait
+003:ret 1
+005:events[i].events & EPOLLIN 0
+001:blocked epoll_wait
+start new thread to receive data on fd: 6
+006:block recv
+007:unblock recv
+thread id is 325666560
+get content: 111111111111111111
+
+002:unblocked epoll_wait
+003:ret 1
+005:events[i].events & EPOLLIN 0
+001:blocked epoll_wait
+start new thread to receive data on fd: 6
+006:block recv
+007:unblock recv
+thread id is 317273856
+get content: 222222222222222222
+
+002:unblocked epoll_wait
+003:ret 1
+005:events[i].events & EPOLLIN 0
+001:blocked epoll_wait
+start new thread to receive data on fd: 6
+006:block recv
+007:unblock recv
+thread id is 308881152
+get content: 333333333333333333
+
+006:block recv
+007:unblock recv
+EAGAIN
+read later
+006:block recv
+007:unblock recv
+EAGAIN
+read later
+006:block recv
+007:unblock recv
+EAGAIN
+read later
+006:block recv
+007:unblock recv
+EAGAIN
+read later
+006:block recv
+007:unblock recv
+EAGAIN
+read later
+[/php]
+//////////////////////////////////////////////////////////////////////////////
+9.4 三组I/O复用函数的比较
+//////////////////////////////////////////////////////////////////////////////
+9.5 I/O复用的高级应用一:非阻塞connect
+//////////////////////////////////////////////////////////////////////////////
+9.6 I/O复用的高级应用二:聊天室程序
+9-6.mytalk.cpp
+[php]
+#define _GNU_SOURCE 1
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+#include <stdlib.h>
+#include <poll.h>
+#include <fcntl.h>
+#define BUFFER_SIZE 64
+int main( int argc, char* argv[] )
+{
+	if( argc <= 2 )
+	{
+		printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	struct sockaddr_in server_address;
+	bzero( &server_address, sizeof( server_address ) );
+	server_address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &server_address.sin_addr );
+	server_address.sin_port = htons( port );
+	int sockfd = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( sockfd >= 0 );
+	if ( connect( sockfd, ( struct sockaddr* )&server_address, sizeof( server_address ) ) < 0 )
+	{
+		printf( "connection failed\n" );
+		close( sockfd );
+		return 1;
+	}
+	pollfd fds[2];
+	fds[0].fd = 0;
+	fds[0].events = POLLIN;
+	fds[0].revents = 0;
+	fds[1].fd = sockfd;
+	fds[1].events = POLLIN | POLLRDHUP;
+	fds[1].revents = 0;
+	char read_buf[BUFFER_SIZE];
+	int pipefd[2];
+	int ret = pipe( pipefd );
+	assert( ret != -1 );
+	while( 1 )
+	{
+		ret = poll( fds, 2, 20 );
+		if( ret < 0 )
+		{
+			printf( "poll failure\n" );
+			break;
+		}
+		if( fds[1].revents & POLLRDHUP )
+		{
+			printf( "server close the connection\n" );
+			break;
+		}
+		else if( fds[1].revents & POLLIN )
+		{
+			memset( read_buf, '\0', BUFFER_SIZE );
+			recv( fds[1].fd, read_buf, BUFFER_SIZE-1, 0 );
+			printf( "%s\n", read_buf );
+		}
+		if( fds[0].revents & POLLIN )
+		{
+			ret = splice( 0, NULL, pipefd[1], NULL, 32768, SPLICE_F_MORE | SPLICE_F_MOVE );
+			ret = splice( pipefd[0], NULL, sockfd, NULL, 32768, SPLICE_F_MORE | SPLICE_F_MOVE );
+		}
+	}
+	close( sockfd );
+	return 0;
+}
+[/php]
+
+9-7.mytalk_server.cpp
+[php]
+#define _GNU_SOURCE 1
+#include <sys/socket.h>
+#include <stdio.h>
+#include <libgen.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <poll.h>
+#include <unistd.h>
+#include <assert.h>
+#include <errno.h>
+#define USER_LIMIT 5
+#define BUFFER_SIZE 64
+#define FD_LIMIT 65535
+struct client_data{
+	sockaddr_in address;
+	char* write_buf;
+	char buf[ BUFFER_SIZE ];
+};
+int setnonblocking( int fd ){
+	int old_option = fcntl( fd, F_GETFL );
+	int new_option = old_option | O_NONBLOCK;
+	fcntl( fd, F_SETFL, new_option );
+	return old_option;
+}
+int main(int argc, char *argv[])
+{
+	if ( argc <= 2 ) {
+		printf("usage: %s ip port\n", basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	int ret = 0;
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &address.sin_addr );
+	address.sin_port = htons( port );
+	int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( listenfd >= 0 );
+	ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+	assert( ret != -1 );
+	ret = listen( listenfd, 5 );
+	assert( ret != -1 );
+	client_data* users = new client_data[FD_LIMIT];
+	pollfd fds[USER_LIMIT+1];
+	int user_counter = 0;
+	for (int i = 0; i < USER_LIMIT; i++) {
+		fds[i].fd = -1;
+		fds[i].events = 0;
+	}
+	fds[0].fd = listenfd;
+	fds[0].events = POLLIN | POLLERR;
+	fds[0].revents = 0;
+	while ( 1 ) {
+		ret = poll( fds, user_counter+1, -1 );
+		if ( ret < 0 ) {
+			printf("poll failure\n");
+			break;
+		}
+		for (int i = 0; i < user_counter+1; i++) {
+			if ( ( fds[i].fd == listenfd ) && ( fds[i].revents & POLLIN ) ) {
+				struct sockaddr_in client_address;
+				socklen_t client_addrlength = sizeof( client_address );
+				int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+				if ( connfd < 0 ) {
+					printf( "errno is: %d\n", errno );
+					continue;
+				}
+				if ( user_counter >= USER_LIMIT ) {
+					const char* info = "too many users\n";
+					printf( "%s\n", info );
+					send( connfd, info, strlen( info ), 0 );
+					close( connfd );
+					continue;
+				}
+				user_counter++;
+				users[connfd].address = client_address;
+				setnonblocking( connfd );
+				fds[user_counter].fd = connfd;
+				fds[user_counter].events = POLLIN | POLLRDHUP | POLLERR;
+				fds[user_counter].revents = 0;
+				printf("comes a new user, now have %d users\n", user_counter );
+			}else if ( fds[i].revents & POLLERR ) {
+				printf( "get an error from %d\n", fds[i].fd );
+				char errors[ 100 ];
+				memset( errors, '\0', 100 );
+				socklen_t length = sizeof( errors );
+				if ( getsockopt( fds[i].fd, SOL_SOCKET, SO_ERROR, &errors, &length ) <0 ) {
+					printf("get socket option failed\n");
+				}
+				continue;
+			}else if ( fds[i].revents & POLLRDHUP) {
+				close( fds[i].fd );
+				users[fds[i].fd] = users[fds[user_counter].fd];
+				fds[i] = fds[user_counter];
+				i--;
+				user_counter--;
+				printf("a client left\n");
+			}else if ( fds[i].revents & POLLIN ) {
+				int connfd = fds[i].fd;
+				memset( users[connfd].buf, '\0', BUFFER_SIZE );
+				ret = recv( connfd, users[connfd].buf, BUFFER_SIZE-1, 0 );
+				printf( "get %d bytes of client data %s from %d\n", ret, users[connfd].buf, connfd );
+				if ( ret < 0 ) {
+					if ( errno != EAGAIN ) {
+						close( connfd );
+						users[fds[i].fd] = users[fds[user_counter].fd];
+						fds[i] = fds[user_counter];
+						i--;
+						user_counter--;
+					}
+				}else if ( ret == 0 ) {
+					printf("code should nor come to here\n");
+				}else {
+					for (int j = 1; j <= user_counter; j++) {
+						if ( fds[j].fd == connfd ) {
+							continue;
+						}
+						fds[j].events |= POLLOUT;
+						users[fds[j].fd].write_buf = users[connfd].buf;
+					}
+				}
+			}else if ( fds[i].revents & POLLOUT ) {
+				int connfd = fds[i].fd;
+				if ( ! users[connfd].write_buf ) {
+					continue;
+				}
+				ret = send( connfd, users[connfd].write_buf, strlen( users[connfd].write_buf ), 0 );
+				users[connfd].write_buf = NULL;
+				fds[i].events |= POLLIN;
+			}
+		}
+	}
+	delete [] users;
+	close( listenfd );
+	return 0;
+}
+[/php]
+
+g++ 9-7.mytalk_server.cpp  -o 9-7
+g++ 9-6.mytalk.cpp  -o 9-6
+ps:poll调用种通过设置POLLOUT来触发,else if( fds[i].revents & POLLOUT )
+//////////////////////////////////////////////////////////////////////////////
+9.7 I/O复用的高级应用三:同时处理TCP/UDP服务
+同时监听多个端口:
+9-8multi_port.cpp:
+[php]
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/epoll.h>
+#include <pthread.h>
+
+#define MAX_EVENT_NUMBER 1024
+#define TCP_BUFFER_SIZE 512
+#define UDP_BUFFER_SIZE 1024
+
+int setnonblocking( int fd )
+{
+	int old_option = fcntl( fd, F_GETFL );
+	int new_option = old_option | O_NONBLOCK;
+	fcntl( fd, F_SETFL, new_option );
+	return old_option;
+}
+
+void addfd( int epollfd, int fd )
+{
+	epoll_event event;
+	event.data.fd = fd;
+	//event.events = EPOLLIN | EPOLLET;
+	event.events = EPOLLIN;
+	epoll_ctl( epollfd, EPOLL_CTL_ADD, fd, &event );
+	setnonblocking( fd );
+}
+
+int main( int argc, char* argv[] )
+{
+	if( argc <= 2 )
+	{
+		printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+
+	int ret = 0;
+	struct sockaddr_in address;
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &address.sin_addr );
+	address.sin_port = htons( port );
+
+	int listenfd = socket( PF_INET, SOCK_STREAM, 0 );
+	assert( listenfd >= 0 );
+
+	ret = bind( listenfd, ( struct sockaddr* )&address, sizeof( address ) );
+	assert( ret != -1 );
+
+	ret = listen( listenfd, 5 );
+	assert( ret != -1 );
+
+	bzero( &address, sizeof( address ) );
+	address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &address.sin_addr );
+	address.sin_port = htons( port );
+	int udpfd = socket( PF_INET, SOCK_DGRAM, 0 );
+	assert( udpfd >= 0 );
+
+	ret = bind( udpfd, ( struct sockaddr* )&address, sizeof( address ) );
+	assert( ret != -1 );
+
+	epoll_event events[ MAX_EVENT_NUMBER ];
+	int epollfd = epoll_create( 5 );
+	assert( epollfd != -1 );
+	addfd( epollfd, listenfd );
+	addfd( epollfd, udpfd );
+
+	while( 1 )
+	{
+		int number = epoll_wait( epollfd, events, MAX_EVENT_NUMBER, -1 );
+		if ( number < 0 )
+		{
+			printf( "epoll failure\n" );
+			break;
+		}
+
+		for ( int i = 0; i < number; i++ )
+		{
+			int sockfd = events[i].data.fd;
+			if ( sockfd == listenfd )
+			{
+				printf( " sockfd == listenfd " );
+				struct sockaddr_in client_address;
+				socklen_t client_addrlength = sizeof( client_address );
+				int connfd = accept( listenfd, ( struct sockaddr* )&client_address, &client_addrlength );
+				addfd( epollfd, connfd );
+			}
+			else if ( sockfd == udpfd )
+			{
+				printf("udpfd is working\n");
+				char buf[ UDP_BUFFER_SIZE ];
+				memset( buf, '\0', UDP_BUFFER_SIZE );
+				struct sockaddr_in client_address;
+				socklen_t client_addrlength = sizeof( client_address );
+
+				ret = recvfrom( udpfd, buf, UDP_BUFFER_SIZE-1, 0, ( struct sockaddr* )&client_address, &client_addrlength );
+				if( ret > 0 )
+				{
+					sendto( udpfd, buf, UDP_BUFFER_SIZE-1, 0, ( struct sockaddr* )&client_address, client_addrlength );
+				}
+			}
+			else if ( events[i].events & EPOLLIN )
+			{
+				char buf[ TCP_BUFFER_SIZE ];
+				while( 1 )
+				{
+					memset( buf, '\0', TCP_BUFFER_SIZE );
+					ret = recv( sockfd, buf, TCP_BUFFER_SIZE-1, 0 );
+					if( ret < 0 )
+					{
+						if( ( errno == EAGAIN ) || ( errno == EWOULDBLOCK ) )
+						{
+							break;
+						}
+						close( sockfd );
+						break;
+					}
+					else if( ret == 0 )
+					{
+						close( sockfd );
+					}
+					else
+					{
+						send( sockfd, buf, ret, 0 );
+					}
+				}
+			}
+			else
+			{
+				printf( "something else happened \n" );
+			}
+		}
+	}
+
+	close( listenfd );
+	return 0;
+}
+[/php]
+
+9-9.udp_client.cpp:
+[php]
+#include <sys/socket.h>
+#include <stdio.h>
+#include <libgen.h>
+#include <assert.h>
+#include <arpa/inet.h>
+#include <string.h>
+
+#define UDP_BUFFER_SIZE 80
+
+int main(int argc, char *argv[]) {
+	if( argc <= 2 ) {
+		printf( "usage: %s ip_address port_number\n", basename( argv[0] ) );
+		return 1;
+	}
+	const char* ip = argv[1];
+	int port = atoi( argv[2] );
+	struct sockaddr_in client_address;
+	bzero( &client_address, sizeof( client_address ) );
+	client_address.sin_family = AF_INET;
+	inet_pton( AF_INET, ip, &client_address.sin_addr );
+	client_address.sin_port = htons( port );
+	int sockfd = socket( PF_INET, SOCK_DGRAM, 0 );
+	assert( sockfd >= 0 );
+	socklen_t client_addrlength = sizeof( client_address );
+	int ret;
+	char buf[UDP_BUFFER_SIZE];
+	while ( fgets( buf, 80, stdin) ) {
+		ret = sendto( sockfd, buf, UDP_BUFFER_SIZE-1, 0, ( struct sockaddr* )&client_address, client_addrlength );
+		printf( "sendto %d\n", ret );
+		if( ret > 0 ) {
+			ret = recvfrom( sockfd, buf, UDP_BUFFER_SIZE-1, 0, ( struct sockaddr* )&client_address, &client_addrlength );
+			printf( "recvfrom %d\n", ret );
+			printf( "%s\n", buf );
+		}
+	}
+}
+[/php]
+tcp客户端直接telnet
+//////////////////////////////////////////////////////////////////////////////
+9.8 超级服务器xinetd
+cat /var/run/xinetd.pid
+3627
+
+ps -eo pid,ppid,pgid,sid,comm | grep 3627
+3627     1  3627  3627 xinetd
+3658  3627  3644  3644 in.telnetd
+
+sudo lsof -p 3658
+
+sudo lsof -p 3627
+
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
+
+//////////////////////////////////////////////////////////////////////////////
