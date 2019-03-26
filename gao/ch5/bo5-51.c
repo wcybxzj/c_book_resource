@@ -1,9 +1,9 @@
- /* bo5-51.c ¹ãÒå±íµÄÊéĞ´ĞÎÊ½´®ÎªSStringÀàĞÍ */
- #include"c4-1.h" /* ¶¨ÒåSStringÀàĞÍ */
- #include"bo4-1.c" /* SStringÀàĞÍµÄ»ù±¾²Ù×÷ */
- void sever(SString str,SString hstr) /* Ëã·¨5.8  SStringÊÇÊı×é£¬²»ĞèÒıÓÃÀàĞÍ */
- { /* ½«·Ç¿Õ´®str·Ö¸î³ÉÁ½²¿·Ö:hsubÎªµÚÒ»¸ö','Ö®Ç°µÄ×Ó´®,strÎªÖ®ºóµÄ×Ó´® */
-   int n,k,i; /* k¼ÇÉĞÎ´Åä¶ÔµÄ×óÀ¨ºÅ¸öÊı */
+ /* bo5-51.c å¹¿ä¹‰è¡¨çš„ä¹¦å†™å½¢å¼ä¸²ä¸ºSStringç±»å‹ */
+ #include"../ch4/c4-1.h" /* å®šä¹‰SStringç±»å‹ */
+ #include"../ch4/bo4-1.c" /* SStringç±»å‹çš„åŸºæœ¬æ“ä½œ */
+ void sever(SString str,SString hstr) /* ç®—æ³•5.8  SStringæ˜¯æ•°ç»„ï¼Œä¸éœ€å¼•ç”¨ç±»å‹ */
+ { /* å°†éç©ºä¸²stråˆ†å‰²æˆä¸¤éƒ¨åˆ†:hsubä¸ºç¬¬ä¸€ä¸ª','ä¹‹å‰çš„å­ä¸²,strä¸ºä¹‹åçš„å­ä¸² */
+   int n,k,i; /* kè®°å°šæœªé…å¯¹çš„å·¦æ‹¬å·ä¸ªæ•° */
    SString ch,c1,c2,c3;
    n=StrLength(str);
    StrAssign(c1,",");
@@ -11,7 +11,7 @@
    StrAssign(c3,")");
    SubString(ch,str,1,1);
    for(i=1,k=0;i<=n&&StrCompare(ch,c1)||k!=0;++i)
-   { /* ËÑË÷×îÍâ²ãµÄµÚÒ»¸ö¶ººÅ */
+   { /* æœç´¢æœ€å¤–å±‚çš„ç¬¬ä¸€ä¸ªé€—å· */
      SubString(ch,str,i,1);
      if(!StrCompare(ch,c2))
        ++k;
@@ -30,34 +30,34 @@
    }
  }
 
- Status CreateGList(GList *L,SString S) /* Ëã·¨5.7 */
- { /* ²ÉÓÃÍ·Î²Á´±í´æ´¢½á¹¹,ÓÉ¹ãÒå±íµÄÊéĞ´ĞÎÊ½´®S´´½¨¹ãÒå±íL¡£Éèemp="()" */
+ Status CreateGList(GList *L,SString S) /* ç®—æ³•5.7 */
+ { /* é‡‡ç”¨å¤´å°¾é“¾è¡¨å­˜å‚¨ç»“æ„,ç”±å¹¿ä¹‰è¡¨çš„ä¹¦å†™å½¢å¼ä¸²Såˆ›å»ºå¹¿ä¹‰è¡¨Lã€‚è®¾emp="()" */
    SString sub,hsub,emp;
    GList p,q;
    StrAssign(emp,"()");
    if(!StrCompare(S,emp))
-     *L=NULL; /* ´´½¨¿Õ±í */
+     *L=NULL; /* åˆ›å»ºç©ºè¡¨ */
    else
    {
      *L=(GList)malloc(sizeof(GLNode));
-     if(!*L) /* ½¨±í½áµã */
+     if(!*L) /* å»ºè¡¨ç»“ç‚¹ */
        exit(OVERFLOW);
-     if(StrLength(S)==1) /* SÎªµ¥Ô­×Ó */
+     if(StrLength(S)==1) /* Sä¸ºå•åŸå­ */
      {
        (*L)->tag=ATOM;
-       (*L)->a.atom=S[1]; /* ´´½¨µ¥Ô­×Ó¹ãÒå±í */
+       (*L)->a.atom=S[1]; /* åˆ›å»ºå•åŸå­å¹¿ä¹‰è¡¨ */
      }
      else
      {
        (*L)->tag=LIST;
        p=*L;
-       SubString(sub,S,2,StrLength(S)-2); /* ÍÑÍâ²ãÀ¨ºÅ */
+       SubString(sub,S,2,StrLength(S)-2); /* è„±å¤–å±‚æ‹¬å· */
        do
-       { /* ÖØ¸´½¨n¸ö×Ó±í */
-         sever(sub,hsub); /* ´ÓsubÖĞ·ÖÀë³ö±íÍ·´®hsub */
+       { /* é‡å¤å»ºnä¸ªå­è¡¨ */
+         sever(sub,hsub); /* ä»subä¸­åˆ†ç¦»å‡ºè¡¨å¤´ä¸²hsub */
          CreateGList(&p->a.ptr.hp,hsub);
          q=p;
-         if(!StrEmpty(sub)) /* ±íÎ²²»¿Õ */
+         if(!StrEmpty(sub)) /* è¡¨å°¾ä¸ç©º */
          {
            p=(GLNode *)malloc(sizeof(GLNode));
            if(!p)
@@ -71,4 +71,3 @@
    }
    return OK;
  }
-

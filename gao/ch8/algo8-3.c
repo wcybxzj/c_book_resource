@@ -1,8 +1,8 @@
  /* algo8-3.c 实现算法8.3的程序 */
- #include"c1.h"
+ #include"../include/c1.h"
  typedef char AtomType; /* 定义原子类型为字符型 */
  #include"c8-3.h"
- #include"bo5-51.c"
+ #include"../ch5/bo5-51.c"
 
  Status CreateMarkGList(GList *L,SString S) /* 由bo5-51.c改 */
  { /* 采用头尾链表存储结构,由广义表的书写形式串S创建广义表L。设emp="()" */
